@@ -1,7 +1,5 @@
 import streamlit as st
 import pandas as pd
-import time
-import random
 import requests
 import datetime
 
@@ -59,7 +57,8 @@ def generate_market_signals():
         live_price = get_live_price(asset)
         if live_price == 0.0: live_price = 0.0001 
 
-        # Simulated Signals
+        # Simulated Signals (Randomized for demo)
+        import random
         rand_val = random.random()
         if rand_val > 0.6:
             bias = "UP"
@@ -92,71 +91,67 @@ def generate_market_signals():
             
     return pd.DataFrame(data)
 
-# --- 4. DASHBOARD UI ---
+# --- 4. DASHBOARD UI (NO WHILE LOOP) ---
 st.set_page_config(
-    page_title="Crypto 15m Bot with Timer",
+    page_title="Crypto 15m Bot",
     page_icon="⏱️",
     layout="wide",
 )
 
 st.title("🤖 Crypto 15-Minute Prediction Bot")
-st.caption("Real-time prices via Binance | Signals Simulated")
+st.caption("Real-time prices via Binance | Smooth Updates")
 
-placeholder = st.empty()
+# 1. FETCH TIMER
+timer_str, total_seconds_left = get_market_timer()
 
-while True:
-    with placeholder.container():
-        
-        # 1. FETCH TIMER
-        timer_str, total_seconds_left = get_market_timer()
-        
-        # 2. DISPLAY TIMER (HEADER)
-        # If time < 60s, make it red and warn
-        if total_seconds_left < 60:
-            st.error(f"⚠️ MARKET CLOSING SOON: {timer_str}")
-        else:
-            st.success(f"⏱️ Time Remaining in Window: {timer_str}")
-            
-        st.markdown("---") # Divider
-        
-        # 3. FETCH DATA
-        df = generate_market_signals()
-        
-        # 4. TOP METRICS
-        col1, col2, col3, col4 = st.columns(4)
-        
-        with col1:
-            btc_p = df[df['asset']=='BTC']['current_price'].values[0]
-            st.metric("Bitcoin", f"${btc_p:,.2f}")
-        with col2:
-            eth_p = df[df['asset']=='ETH']['current_price'].values[0]
-            st.metric("Ethereum", f"${eth_p:,.2f}")
-        with col3:
-            sol_p = df[df['asset']=='SOL']['current_price'].values[0]
-            st.metric("Solana", f"${sol_p:,.2f}")
-        with col4:
-            st.metric("Status", "Scanning", delta="Live API")
+# 2. DISPLAY TIMER (HEADER)
+# If time < 60s, make it red
+if total_seconds_left < 60:
+    st.error(f"⚠️ MARKET CLOSING SOON: {timer_str}")
+else:
+    st.success(f"⏱️ Time Remaining in Window: {timer_str}")
+    
+st.markdown("---") 
 
-        # 5. MAIN TABLE
-        display_df = df[['asset', 'platform', 'current_price', 'bias', 'true_prob_up', 'confidence', 'signal_label']].copy()
-        display_df.columns = ['Asset', 'Platform', 'Live Price', 'Bias', 'True Prob (UP)', 'Conf', 'Signal Label']
-        
-        def highlight_row(row):
-            if "HIGH CONFIDENCE UP" in row['Signal Label']: return ['background-color: #1b4332'] * len(row)
-            elif "HIGH CONFIDENCE DOWN" in row['Signal Label']: return ['background-color: #4a0404'] * len(row)
-            elif "NEUTRAL" in row['Signal Label']: return ['background-color: #333333'] * len(row)
-            else: return ['background-color: #262626'] * len(row)
-        
-        styled_df = display_df.style.apply(highlight_row, axis=1)
-        st.dataframe(styled_df, use_container_width=True)
+# 3. FETCH DATA
+df = generate_market_signals()
 
-        # 6. DETAILS
-        with st.expander("View Reasoning"):
-            for i, row in df.iterrows():
-                st.text(f"{row['asset']}: {row['signal_label']} (Confidence: {row['confidence']:.1%})")
+# 4. TOP METRICS
+col1, col2, col3, col4 = st.columns(4)
 
-        st.caption(f"Last Updated: {datetime.datetime.now().strftime('%H:%M:%S')}")
+with col1:
+    btc_p = df[df['asset']=='BTC']['current_price'].values[0]
+    st.metric("Bitcoin", f"${btc_p:,.2f}")
+with col2:
+    eth_p = df[df['asset']=='ETH']['current_price'].values[0]
+    st.metric("Ethereum", f"${eth_p:,.2f}")
+with col3:
+    sol_p = df[df['asset']=='SOL']['current_price'].values[0]
+    st.metric("Solana", f"${sol_p:,.2f}")
+with col4:
+    st.metric("Status", "Scanning", delta="Live API")
 
-    # Refresh every 5 seconds
-    time.sleep(5)
-    placeholder.empty()
+# 5. MAIN TABLE
+display_df = df[['asset', 'platform', 'current_price', 'bias', 'true_prob_up', 'confidence', 'signal_label']].copy()
+display_df.columns = ['Asset', 'Platform', 'Live Price', 'Bias', 'True Prob (UP)', 'Conf', 'Signal Label']
+
+def highlight_row(row):
+    if "HIGH CONFIDENCE UP" in row['Signal Label']: return ['background-color: #1b4332'] * len(row)
+    elif "HIGH CONFIDENCE DOWN" in row['Signal Label']: return ['background-color: #4a0404'] * len(row)
+    elif "NEUTRAL" in row['Signal Label']: return ['background-color: #333333'] * len(row)
+    else: return ['background-color: #262626'] * len(row)
+
+styled_df = display_df.style.apply(highlight_row, axis=1)
+st.dataframe(styled_df, use_container_width=True)
+
+# 6. DETAILS
+with st.expander("View Reasoning"):
+    for i, row in df.iterrows():
+        st.text(f"{row['asset']}: {row['signal_label']} (Confidence: {row['confidence']:.1%})")
+
+st.caption(f"Last Updated: {datetime.datetime.now().strftime('%H:%M:%S')}")
+
+# --- THE FIX: AUTO-RERUN ---
+# This tells Streamlit to re-run this script every 5 seconds 
+# WITHOUT using a blocking 'while' loop.
+st.automatic_rerun(interval=5000)
