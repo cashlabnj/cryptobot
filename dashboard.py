@@ -3,7 +3,7 @@ import pandas as pd
 import requests
 import datetime
 import random
-import time # <--- Make sure time is imported
+import time
 
 # --- 1. TIMER LOGIC ---
 def get_market_timer():
@@ -107,7 +107,6 @@ def generate_market_signals():
 # --- 4. DASHBOARD UI ---
 st.set_page_config(page_title="Crypto Bot Analysis", page_icon="📉", layout="wide")
 
-# Create a placeholder to hold the dynamic content
 placeholder = st.empty()
 
 while True:
