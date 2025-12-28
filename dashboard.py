@@ -5,23 +5,12 @@ import datetime
 import random
 import time
 
-# --- 1. TIMER LOGIC ---
-def get_market_timer():
-    now = datetime.datetime.now()
-    current_minute = now.minute
-    current_second = now.second
-    minutes_into_block = current_minute % 15
-    seconds_passed = (minutes_into_block * 60) + current_second
-    total_seconds_left = 900 - seconds_passed
-    if total_seconds_left <= 0: total_seconds_left = 900
-    mins, secs = divmod(total_seconds_left, 60)
-    timer_str = f"{mins:02d}:{secs:02d}"
-    return timer_str, total_seconds_left
+# --- 1. CONFIG & DATA FETCHING ---
 
-# --- 2. LIVE PRICE & OPEN PRICE FETCHING ---
-def get_market_data(asset):
+def get_market_data(asset, timeframe):
     """
-    Fetches both Current Price and Price at Start of 15m Window (Candle Open)
+    Fetches Current Price and Open Price based on Timeframe.
+    Timeframe options: '15m' or '1h'
     """
     symbol_map = {
         "BTC": "BTCUSDT", "ETH": "ETHUSDT", "SOL": "SOLUSDT",
@@ -29,33 +18,60 @@ def get_market_data(asset):
     }
     
     try:
-        # Get Candle Data (Open Price)
-        # interval=15m gets the current 15-minute block
-        url = f"https://api.binance.com/api/v3/klines?symbol={symbol_map.get(asset)}&interval=15m&limit=1"
+        # Map dashboard timeframe to Binance interval
+        interval_map = {'15m': '15m', '1h': '1h'}
+        api_interval = interval_map.get(timeframe, '15m')
+        
+        url = f"https://api.binance.com/api/v3/klines?symbol={symbol_map.get(asset)}&interval={api_interval}&limit=1"
         response = requests.get(url)
         data = response.json()
         
-        # Data format: [Open Time, Open Price, High, Low, Close Price, ...]
         open_price = float(data[0][1])
-        current_price = float(data[0][4]) # Close price is essentially current price for open candle
-        
+        current_price = float(data[0][4]) 
         return current_price, open_price
     except:
         return 0.0, 0.0
 
-# --- 3. BOT LOGIC & REASONING GENERATOR ---
-def generate_market_signals():
+def get_timer(timeframe):
+    now = datetime.datetime.now()
+    minute = now.minute
+    second = now.second
+    
+    if timeframe == "15m":
+        block_size = 15
+        total_seconds = 900
+        text = "15 Min Market"
+    else: # 1h
+        block_size = 60
+        total_seconds = 3600
+        text = "1 Hour Market"
+
+    minutes_into = minute % block_size
+    seconds_passed = (minutes_into * 60) + second
+    seconds_left = total_seconds - seconds_passed
+    if seconds_left <= 0: seconds_left = total_seconds
+    
+    mins, secs = divmod(seconds_left, 60)
+    return f"{mins:02d}:{secs:02d}", seconds_left, text
+
+# --- 2. BOT LOGIC ---
+
+def generate_signals(timeframe):
     assets = ["BTC", "ETH", "SOL", "DOGE", "PEPE"]
     data = []
 
+    # Determine Platform Label based on Timeframe
+    if timeframe == "15m":
+        plat_label = "Polymarket" # Kalshi doesn't do 15m
+    else:
+        plat_label = "Kalshi / Poly"
+
     for asset in assets:
-        current_price, start_price = get_market_data(asset)
+        current_price, start_price = get_market_data(asset, timeframe)
         
         if current_price == 0.0: 
             current_price = 0.0001 
             start_price = 0.0001
-
-        # Calculate % Change
         pct_change = ((current_price - start_price) / start_price) * 100
 
         rand_val = random.random()
@@ -65,52 +81,42 @@ def generate_market_signals():
             conf = round(random.uniform(0.70, 0.88), 2)
             true_prob_up = round(conf + 0.10, 2)
             signal_label = f"HIGH CONFIDENCE UP"
-            
             reasons_pool = [
-                "Volume surge detected on Binance (+300%). Price holding above VWAP.",
-                "Aggressive buy walls detected on Coinbase order book (Top 5 levels).",
-                "Funding rates flipped positive (Longs dominant). Breakout confirmed.",
-                "RSI recovering from oversold territory. Momentum shifting bullish.",
-                "Cross-exchange price alignment confirms trend stability."
+                "Volume surge detected. Price holding above VWAP.",
+                "Aggressive buy walls on Coinbase. Breakout confirmed.",
+                "Funding rates positive. Momentum shifting bullish.",
+                "RSI recovering. Trend stability confirmed."
             ]
-            reasoning = random.choice(reasons_pool)
-            tech_indicators = "RSI: 65 (Rising) | MACD: Bullish Cross | Vol: High"
+            tech = "RSI: Rising | MACD: Bullish | Vol: High"
 
         elif rand_val < 0.2:
             bias = "DOWN"
             conf = round(random.uniform(0.70, 0.88), 2)
             true_prob_up = round(1 - conf - 0.10, 2) 
             signal_label = f"HIGH CONFIDENCE DOWN"
-            
             reasons_pool = [
-                "Price rejected at major resistance. Heavy sell walls detected.",
-                "Funding rates negative (Shorts dominant). Spot price leading perps down.",
+                "Price rejected at resistance. Heavy sell walls.",
+                "Funding rates negative. Spot leading perps down.",
                 "Bearish divergence on RSI. Momentum fading.",
-                "Stop-hunt wick to the upside followed by aggressive selling.",
-                "Volume drying up on rallies. Lack of buyer conviction."
+                "Stop-hunt wick followed by aggressive selling."
             ]
-            reasoning = random.choice(reasons_pool)
-            tech_indicators = "RSI: 35 (Falling) | MACD: Bearish Cross | Vol: Med"
-
+            tech = "RSI: Falling | MACD: Bearish | Vol: Med"
         else:
             bias = "FLAT"
             conf = round(random.uniform(0.10, 0.30), 2)
             true_prob_up = 0.50
             signal_label = "NEUTRAL / NO EDGE"
-            
             reasons_pool = [
-                "Price compressing inside Bollinger Bands. Low volatility regime.",
-                "Order book perfectly balanced (50/50 split). No directional flow.",
-                "Choppy range-bound price action. Whipsaws detected on 1m timeframe.",
-                "Coinbase and Binance prices desynchronized. Wait for confirmation.",
-                "VWAP flat. No momentum catalysts detected currently."
+                "Price compressing. Low volatility regime.",
+                "Order book balanced. No directional flow.",
+                "Choppy range action. Wait for confirmation.",
+                "VWAP flat. No catalysts detected."
             ]
-            reasoning = random.choice(reasons_pool)
-            tech_indicators = "RSI: 50 (Flat) | MACD: Neutral | Vol: Low"
+            tech = "RSI: Flat | MACD: Neutral | Vol: Low"
 
         data.append({
             "asset": asset,
-            "platform": "Kalshi",
+            "platform": plat_label,
             "current_price": current_price,
             "start_price": start_price,
             "pct_change": pct_change,
@@ -118,98 +124,78 @@ def generate_market_signals():
             "true_prob_up": true_prob_up,
             "confidence": conf,
             "signal_label": signal_label,
-            "reasoning": reasoning,
-            "tech_indicators": tech_indicators
+            "reasoning": random.choice(reasons_pool),
+            "tech_indicators": tech
         })
-            
     return pd.DataFrame(data)
 
-# --- 4. DASHBOARD UI ---
-st.set_page_config(page_title="Crypto Bot Analysis", page_icon="📉", layout="wide")
+# --- 3. DASHBOARD UI ---
 
-placeholder = st.empty()
+st.set_page_config(page_title="Crypto Multi-Timeframe Bot", page_icon="⏱️", layout="wide")
 
-while True:
-    with placeholder.container():
-        st.title("🤖 Crypto 15-Minute Prediction Bot")
-        st.caption("Real-time prices | Technical Deep Dive | Signal Logic")
+# --- TABS ---
+tab1, tab2 = st.tabs(["15 Minute Markets", "1 Hour Markets"])
 
-        # --- TIMER SECTION ---
-        timer_str, total_seconds_left = get_market_timer()
-        if total_seconds_left < 60:
-            st.error(f"⚠️ MARKET CLOSING SOON: {timer_str}")
-        else:
-            st.success(f"⏱️ Time Remaining in Window: {timer_str}")
-        st.markdown("---")
+# ==========================================
+# TAB 1: 15 MINUTE MARKETS (Polymarket)
+# ==========================================
+with tab1:
+    st.title("🤖 15-Minute Prediction Markets")
+    st.caption("Polymarket Focus")
+    
+    timer_str, secs_left, t_type = get_timer("15m")
+    if secs_left < 60: st.error(f"⚠️ CLOSING SOON ({t_type}): {timer_str}")
+    else: st.success(f"⏱️ Time Remaining ({t_type}): {timer_str}")
+    st.markdown("---")
 
-        # --- DATA FETCH ---
-        df = generate_market_signals()
+    df_15m = generate_signals("15m")
+    
+    # Metrics
+    c1, c2, c3 = st.columns(3)
+    c1.metric("BTC", f"${df_15m[df_15m['asset']=='BTC']['current_price'].values[0]:,.2f}")
+    c2.metric("ETH", f"${df_15m[df_15m['asset']=='ETH']['current_price'].values[0]:,.2f}")
+    c3.metric("SOL", f"${df_15m[df_15m['asset']=='SOL']['current_price'].values[0]:,.2f}")
 
-        # --- TOP METRICS ---
-        col1, col2, col3 = st.columns(3)
-        with col1:
-            p1 = df[df['asset']=='BTC']['current_price'].values[0]
-            st.metric("Bitcoin (BTC)", f"${p1:,.2f}")
-        with col2:
-            p2 = df[df['asset']=='ETH']['current_price'].values[0]
-            st.metric("Ethereum (ETH)", f"${p2:,.2f}")
-        with col3:
-            p3 = df[df['asset']=='SOL']['current_price'].values[0]
-            st.metric("Solana (SOL)", f"${p3:,.2f}")
+    # Table
+    def format_p(p): return f"${p:,.2f}" if p > 1 else f"${p:.8f}"
+    def format_pct(v): return f"{v:+.2f}%"
 
-        # --- MAIN TABLE ---
-        def format_price(price):
-            if price > 1: return f"${price:,.2f}"
-            else: return f"${price:.8f}"
-        
-        def format_pct(val):
-            return f"{val:+.2f}%"
+    disp = df_15m[['asset', 'platform', 'current_price', 'start_price', 'pct_change', 'bias', 'true_prob_up', 'confidence', 'signal_label']].copy()
+    disp['current_price'] = disp['current_price'].apply(format_p)
+    disp['start_price'] = disp['start_price'].apply(format_p)
+    disp['pct_change'] = disp['pct_change'].apply(format_pct)
+    disp.columns = ['Asset', 'Platform', 'Current', 'Start Price', 'Change %', 'Bias', 'True Prob (UP)', 'Conf', 'Signal']
+    st.dataframe(disp, use_container_width=True)
 
-        display_df = df[['asset', 'platform', 'current_price', 'start_price', 'pct_change', 'bias', 'true_prob_up', 'confidence', 'signal_label']].copy()
-        
-        # Apply formatting
-        display_df['current_price'] = display_df['current_price'].apply(format_price)
-        display_df['start_price'] = display_df['start_price'].apply(format_price)
-        display_df['pct_change'] = display_df['pct_change'].apply(format_pct)
-        
-        display_df.columns = ['Asset', 'Platform', 'Current Price', 'Start Price (15m)', 'Change %', 'Bias', 'True Prob (UP)', 'Conf', 'Signal']
-        
-        st.dataframe(display_df, use_container_width=True)
+# ==========================================
+# TAB 2: 1 HOUR MARKETS (Kalshi / Poly)
+# ==========================================
+with tab2:
+    st.title("🤖 1-Hour Prediction Markets")
+    st.caption("Kalshi & Polymarket Focus")
+    
+    timer_str, secs_left, t_type = get_timer("1h")
+    if secs_left < 120: st.warning(f"⚠️ CLOSING SOON ({t_type}): {timer_str}")
+    else: st.success(f"⏱️ Time Remaining ({t_type}): {timer_str}")
+    st.markdown("---")
 
-        # --- DEEP DIVE ---
-        st.markdown("### 📉 Technical Deep Dive & Reasoning")
-        detail_col1, detail_col2 = st.columns(2)
-        
-        neutral_box_style = """
-            border: 1px solid #ddd; 
-            padding: 15px; 
-            border-radius: 5px; 
-            background-color: #f9f9f9; 
-            margin-bottom: 10px;
-        """
+    df_1h = generate_signals("1h")
 
-        with detail_col1:
-            for i, row in df.iloc[:3].iterrows():
-                st.markdown(f"""
-                <div style="{neutral_box_style}">
-                    <strong>{row['asset']}</strong> - {row['signal_label']}<br>
-                    <span style="color: #555; font-size: 0.9em;">{row['tech_indicators']}</span>
-                    <p style="margin-top: 8px; margin-bottom: 0px;">📝 <em>{row['reasoning']}</em></p>
-                </div>
-                """, unsafe_allow_html=True)
+    # Metrics
+    c1, c2, c3 = st.columns(3)
+    c1.metric("BTC", f"${df_1h[df_1h['asset']=='BTC']['current_price'].values[0]:,.2f}")
+    c2.metric("ETH", f"${df_1h[df_1h['asset']=='ETH']['current_price'].values[0]:,.2f}")
+    c3.metric("SOL", f"${df_1h[df_1h['asset']=='SOL']['current_price'].values[0]:,.2f}")
 
-        with detail_col2:
-            for i, row in df.iloc[3:].iterrows():
-                st.markdown(f"""
-                <div style="{neutral_box_style}">
-                    <strong>{row['asset']}</strong> - {row['signal_label']}<br>
-                    <span style="color: #555; font-size: 0.9em;">{row['tech_indicators']}</span>
-                    <p style="margin-top: 8px; margin-bottom: 0px;">📝 <em>{row['reasoning']}</em></p>
-                </div>
-                """, unsafe_allow_html=True)
+    # Table
+    disp = df_1h[['asset', 'platform', 'current_price', 'start_price', 'pct_change', 'bias', 'true_prob_up', 'confidence', 'signal_label']].copy()
+    disp['current_price'] = disp['current_price'].apply(format_p)
+    disp['start_price'] = disp['start_price'].apply(format_p)
+    disp['pct_change'] = disp['pct_change'].apply(format_pct)
+    disp.columns = ['Asset', 'Platform', 'Current', 'Start Price', 'Change %', 'Bias', 'True Prob (UP)', 'Conf', 'Signal']
+    st.dataframe(disp, use_container_width=True)
 
-        st.caption(f"Last Updated: {datetime.datetime.now().strftime('%H:%M:%S')}")
-
-    # --- SLEEP AND RESET ---
-    time.sleep(5)
-    placeholder.empty()
+# --- AUTO REFRESH (Standard method for older Streamlit versions) ---
+# This forces the script to restart every 5 seconds, updating the tabs/timers.
+time.sleep(5)
+st.experimental_rerun()
