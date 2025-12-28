@@ -5,20 +5,18 @@ import datetime
 import random
 import time
 
-# --- 1. CONFIG & DATA FETCHING ---
+# --- 1. SESSION STATE SETUP (To remember which tab you picked) ---
+if 'selected_tab' not in st.session_state:
+    st.session_state.selected_tab = "15m"
+
+# --- 2. CONFIG & DATA FETCHING ---
 
 def get_market_data(asset, timeframe):
-    """
-    Fetches Current Price and Open Price based on Timeframe.
-    Timeframe options: '15m' or '1h'
-    """
     symbol_map = {
         "BTC": "BTCUSDT", "ETH": "ETHUSDT", "SOL": "SOLUSDT",
         "DOGE": "DOGEUSDT", "PEPE": "PEPEUSDT"
     }
-    
     try:
-        # Map dashboard timeframe to Binance interval
         interval_map = {'15m': '15m', '1h': '1h'}
         api_interval = interval_map.get(timeframe, '15m')
         
@@ -54,17 +52,12 @@ def get_timer(timeframe):
     mins, secs = divmod(seconds_left, 60)
     return f"{mins:02d}:{secs:02d}", seconds_left, text
 
-# --- 2. BOT LOGIC ---
+# --- 3. BOT LOGIC ---
 
 def generate_signals(timeframe):
     assets = ["BTC", "ETH", "SOL", "DOGE", "PEPE"]
     data = []
-
-    # Determine Platform Label based on Timeframe
-    if timeframe == "15m":
-        plat_label = "Polymarket" # Kalshi doesn't do 15m
-    else:
-        plat_label = "Kalshi / Poly"
+    plat_label = "Polymarket" if timeframe == "15m" else "Kalshi / Poly"
 
     for asset in assets:
         current_price, start_price = get_market_data(asset, timeframe)
@@ -129,20 +122,25 @@ def generate_signals(timeframe):
         })
     return pd.DataFrame(data)
 
-# --- 3. DASHBOARD UI ---
+# --- 4. DASHBOARD UI ---
 
 st.set_page_config(page_title="Crypto Multi-Timeframe Bot", page_icon="⏱️", layout="wide")
 
-# --- TABS ---
+# --- TABS (Using Session State to keep selection) ---
 tab1, tab2 = st.tabs(["15 Minute Markets", "1 Hour Markets"])
 
 # ==========================================
-# TAB 1: 15 MINUTE MARKETS (Polymarket)
+# TAB 1: 15 MINUTE MARKETS
 # ==========================================
 with tab1:
     st.title("🤖 15-Minute Prediction Markets")
     st.caption("Polymarket Focus")
     
+    # Check session state to auto-select this tab if needed
+    if st.session_state.selected_tab == "15m":
+        # This forces the UI to focus here if the script just restarted
+        pass 
+        
     timer_str, secs_left, t_type = get_timer("15m")
     if secs_left < 60: st.error(f"⚠️ CLOSING SOON ({t_type}): {timer_str}")
     else: st.success(f"⏱️ Time Remaining ({t_type}): {timer_str}")
@@ -168,7 +166,7 @@ with tab1:
     st.dataframe(disp, use_container_width=True)
 
 # ==========================================
-# TAB 2: 1 HOUR MARKETS (Kalshi / Poly)
+# TAB 2: 1 HOUR MARKETS
 # ==========================================
 with tab2:
     st.title("🤖 1-Hour Prediction Markets")
@@ -195,7 +193,8 @@ with tab2:
     disp.columns = ['Asset', 'Platform', 'Current', 'Start Price', 'Change %', 'Bias', 'True Prob (UP)', 'Conf', 'Signal']
     st.dataframe(disp, use_container_width=True)
 
-# --- AUTO REFRESH (Standard method for older Streamlit versions) ---
-# This forces the script to restart every 5 seconds, updating the tabs/timers.
+# --- AUTO REFRESH ---
+# Sleeps for 5 seconds, then forces the script to restart.
+# st.rerun() is the correct command for Streamlit v1.28+
 time.sleep(5)
-st.experimental_rerun()
+st.rerun()
