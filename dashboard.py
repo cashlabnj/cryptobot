@@ -9,91 +9,92 @@ import time
 if 'selected_tab' not in st.session_state:
     st.session_state.selected_tab = "15m"
 
-# --- 2. DATA FETCHING (DEBUG MODE) ---
+# --- 2. DATA FETCHING (KRAKEN & COINCAP Fallback) ---
 
 def get_market_data(asset, timeframe):
     """
-    Fetches with Headers and verbose error logging.
+    Primary: Kraken API (Reliable on Streamlit Cloud)
+    Fallback: CoinCap (Reliable for Spot Price)
     """
-    # Common headers to look like a browser (prevents blocking)
-    headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+    
+    # === MAPPING ASSETS TO API SYMBOLS ===
+    # Kraken uses specific pairs
+    kraken_map = {
+        "BTC": "XXBTZUSD", "ETH": "XETHZUSD", "SOL": "SOLUSD",
+        "DOGE": "XDGUSD", "PEPE": "PEPEUSD"
     }
     
-    binance_sym = f"{asset}USDT"
-    bybit_sym = f"{asset}USDT"
-    coinbase_sym = f"{asset}-USD"
+    coinbase_map = {"BTC": "BTCUSDT", "ETH": "ETHUSDT", "SOL": "SOLUSDT", "DOGE": "DOGEUSDT", "PEPE": "PEPEUSDT"}
     
-    interval_map = {'15m': '15m', '1h': '1h'}
-    bybit_map = {'15m': '15', '1h': '60'}
-    coinbase_map = {'15m': 900, '1h': 3600}
+    # Map timeframe to API intervals
+    interval_map = {'15m': 15, '1h': 60} # Minutes
     
-    api_interval = interval_map.get(timeframe, '15m')
-    api_bybit = bybit_map.get(timeframe, '15')
-    api_coinbase = coinbase_map.get(timeframe, 900)
+    try:
+        current_price = 0.0
+        start_price = 0.0
+        source = "Unknown"
 
-    sources = ["Binance", "Bybit", "Coinbase"]
-    
-    for source in sources:
+        # === SOURCE 1: KRAKEN (Best for Serverless) ===
         try:
-            current_price = 0.0
-            start_price = 0.0
+            # 1. Get Candles (OHLC) to get Start Price & Current Price
+            pair = kraken_map.get(asset)
+            url_ohlc = f"https://api.kraken.com/0/public/OHLC?pair={pair}&interval={interval_map.get(timeframe, 15)}"
             
-            # === SOURCE 1: BINANCE ===
-            if source == "Binance":
-                # Price
-                url_price = f"https://api.binance.com/api/v3/ticker/price?symbol={binance_sym}"
-                resp_price = requests.get(url_price, headers=headers, timeout=5) # Timeout 5s
-                if resp_price.status_code != 200: raise Exception(f"Status {resp_price.status_code}")
-                current_price = float(resp_price.json()['price'])
+            # Kraken returns JSON with the pair name as the key in 'result'
+            resp_ohlc = requests.get(url_ohlc, timeout=5)
+            data_ohlc = resp_ohlc.json()
+            
+            if resp_ohlc.status_code == 200 and 'result' in data_ohlc:
+                # Extract the data list from the specific pair key
+                result_key = list(data_ohlc['result'].keys())[0]
+                candles = data_ohlc['result'][result_key]
                 
-                # Candles
-                url_klines = f"https://api.binance.com/api/v3/klines?symbol={binance_sym}&interval={api_interval}&limit=1"
-                resp_klines = requests.get(url_klines, headers=headers, timeout=5)
-                if resp_klines.status_code != 200: raise Exception(f"Status {resp_klines.status_code}")
-                start_price = float(resp_klines.json()[0][1])
-
-            # === SOURCE 2: BYBIT ===
-            elif source == "Bybit":
-                # Price
-                url_price = f"https://api.bybit.com/v5/market/tickers?category=spot&symbol={bybit_sym}"
-                resp_price = requests.get(url_price, headers=headers, timeout=5)
-                if resp_price.status_code != 200: raise Exception(f"Status {resp_price.status_code}")
-                current_price = float(resp_price.json()['result']['list'][0]['lastPrice'])
+                # Last candle is current period
+                current_candle = candles[-1]
+                current_price = float(current_candle[4]) # Close (Current)
+                start_price = float(current_candle[1])  # Open (Start of 15m/1h)
+                source = "Kraken"
                 
-                # Candles
-                url_klines = f"https://api.bybit.com/v5/market/kline?category=spot&symbol={bybit_sym}&interval={api_bybit}&limit=1"
-                resp_klines = requests.get(url_klines, headers=headers, timeout=5)
-                if resp_klines.status_code != 200: raise Exception(f"Status {resp_klines.status_code}")
-                start_price = float(resp_klines.json()['result']['list'][0]['open'])
-
-            # === SOURCE 3: COINBASE ===
-            elif source == "Coinbase":
-                # Price
-                url_price = f"https://api.coinbase.com/v2/prices/{coinbase_sym}/spot"
-                resp_price = requests.get(url_price, headers=headers, timeout=5)
-                if resp_price.status_code != 200: raise Exception(f"Status {resp_price.status_code}")
-                current_price = float(resp_price.json()['data']['amount'])
+                # If success, return immediately
+                return current_price, start_price, source
+            else:
+                raise Exception("Kraken Data Format Error")
                 
-                # Candles
-                url_klines = f"https://api.coinbase.com/v2/prices/{coinbase_sym}/candles?granularity={api_coinbase}"
-                resp_klines = requests.get(url_klines, headers=headers, timeout=5)
-                if resp_klines.status_code != 200: raise Exception(f"Status {resp_klines.status_code}")
-                start_price = float(resp_klines.json()['data'][0][3])
-
-            # Success
-            return current_price, start_price, source
-
         except Exception as e:
-            # LOG ERROR TO SIDEBAR
-            error_msg = f"{source} Fail ({asset}): {str(e)}"
-            # st.sidebar.warning(error_msg) # Can be too spammy
-            continue
+            # st.sidebar.write(f"Kraken failed: {e}") # Silent fail
+            pass
 
-    # If all fail
-    return 0.0, 0.0, "Error"
+        # === SOURCE 2: COINCAP (Fallback for Spot Price) ===
+        try:
+            # Coincap IDs are lowercase names
+            id_map = {"BTC": "bitcoin", "ETH": "ethereum", "SOL": "solana", "DOGE": "dogecoin", "PEPE": "pepe"}
+            coin_id = id_map.get(asset, asset.lower())
+            
+            url_spot = f"https://api.coincap.io/v2/assets/{coin_id}"
+            resp_spot = requests.get(url_spot, timeout=5)
+            
+            if resp_spot.status_code == 200:
+                data = resp_spot.json()
+                current_price = float(data['data']['priceUsd'])
+                
+                # Coincap doesn't easily give OHLC for current candle.
+                # If we are here, we have current price but NO start price.
+                # We will return 0 for start price, causing "DATA ERROR" in logic, 
+                # BUT at least the dashboard shows a live price.
+                return current_price, 0.0, "Coincap"
+            else:
+                raise Exception("Coincap Failed")
+                
+        except:
+            pass
+
+        return 0.0, 0.0, "Error"
+
+    except Exception as e:
+        return 0.0, 0.0, "Error"
 
 def get_timer(timeframe):
+    # Using UTC to match standard crypto exchanges
     now = datetime.datetime.utcnow() 
     minute = now.minute
     second = now.second
@@ -126,18 +127,19 @@ def generate_signals(timeframe):
         current_price, start_price, source = get_market_data(asset, timeframe)
         
         if current_price == 0.0 or start_price == 0.0:
+            reason = "Data Error" if current_price == 0.0 else "Missing Open Price (API Limit)"
             data.append({
                 "asset": asset,
                 "platform": plat_label,
-                "source": "UNAVAILABLE",
-                "current_price": 0.0,
-                "start_price": 0.0,
+                "source": source,
+                "current_price": current_price,
+                "start_price": start_price,
                 "pct_change": 0.0,
                 "bias": "WAIT",
                 "true_prob_up": 0.50,
                 "confidence": 0.0,
                 "signal_label": "DATA ERROR",
-                "reasoning": "Check Sidebar for Error Logs",
+                "reasoning": reason,
                 "tech_indicators": "OFFLINE"
             })
             continue
@@ -204,28 +206,11 @@ def generate_signals(timeframe):
 
 st.set_page_config(page_title="Crypto Multi-Source Bot", page_icon="🌐", layout="wide")
 
-# SIDEBAR
+# SIDEBAR STATUS
 with st.sidebar:
-    st.header("📡 Network Logs")
-    st.caption("If Data Error is visible, read the detailed logs below.")
-    
-    # Debugging area
-    st.subheader("Diagnostic Info")
-    st.write("Fetching prices from 3 sources...")
-    
-    # Try one manual fetch to show debug info
-    try:
-        resp = requests.get("https://api.binance.com/api/v3/ticker/price?symbol=BTCUSDT", timeout=3)
-        if resp.status_code == 200:
-            st.success(f"Binance Connection: OK (BTC Price: {resp.json()['price']})")
-        else:
-            st.error(f"Binance Connection: {resp.status_code}")
-    except Exception as e:
-        st.error(f"Binance Connection: FAILED")
-        st.code(str(e), language="python")
-    
-    st.divider()
-    st.caption("Refresh Interval: 10s")
+    st.header("📡 Network Status")
+    st.caption("Primary API: Kraken (Unblocked)")
+    st.caption("Binance/Bybit: Blocked (451)")
 
 tab1, tab2 = st.tabs(["15 Minute Markets", "1 Hour Markets"])
 
@@ -234,6 +219,7 @@ tab1, tab2 = st.tabs(["15 Minute Markets", "1 Hour Markets"])
 # ==========================================
 with tab1:
     st.title("🤖 15-Minute Prediction Markets (UTC)")
+    st.caption("Polymarket Focus | Switched to Kraken API")
     
     timer_str, secs_left, t_type = get_timer("15m")
     if secs_left < 60: st.error(f"⚠️ CLOSING SOON ({t_type}): {timer_str}")
@@ -242,11 +228,13 @@ with tab1:
 
     df_15m = generate_signals("15m")
     
+    # Metrics
     c1, c2, c3 = st.columns(3)
     c1.metric("BTC", f"${df_15m[df_15m['asset']=='BTC']['current_price'].values[0]:,.2f}")
     c2.metric("ETH", f"${df_15m[df_15m['asset']=='ETH']['current_price'].values[0]:,.2f}")
     c3.metric("SOL", f"${df_15m[df_15m['asset']=='SOL']['current_price'].values[0]:,.2f}")
 
+    # Table
     def format_p(p): return f"${p:,.2f}" if p > 1 else f"${p:.8f}"
     def format_pct(v): return f"{v:+.2f}%"
 
@@ -257,6 +245,7 @@ with tab1:
     disp.columns = ['Asset', 'Data Source', 'Platform', 'Current (Live)', 'Start Price (UTC)', 'Change %', 'Bias', 'True Prob (UP)', 'Conf', 'Signal']
     st.dataframe(disp, use_container_width=True)
 
+    # DEEP DIVE
     st.markdown("### 📉 Technical Deep Dive & Reasoning")
     detail_col1, detail_col2 = st.columns(2)
     neutral_box_style = "border: 1px solid #ddd; padding: 15px; border-radius: 5px; background-color: #f9f9f9; margin-bottom: 10px;"
@@ -286,6 +275,7 @@ with tab1:
 # ==========================================
 with tab2:
     st.title("🤖 1-Hour Prediction Markets (UTC)")
+    st.caption("Kalshi & Polymarket Focus | Switched to Kraken API")
     
     timer_str, secs_left, t_type = get_timer("1h")
     if secs_left < 120: st.warning(f"⚠️ CLOSING SOON ({t_type}): {timer_str}")
@@ -294,11 +284,13 @@ with tab2:
 
     df_1h = generate_signals("1h")
 
+    # Metrics
     c1, c2, c3 = st.columns(3)
     c1.metric("BTC", f"${df_1h[df_1h['asset']=='BTC']['current_price'].values[0]:,.2f}")
     c2.metric("ETH", f"${df_1h[df_1h['asset']=='ETH']['current_price'].values[0]:,.2f}")
     c3.metric("SOL", f"${df_1h[df_1h['asset']=='SOL']['current_price'].values[0]:,.2f}")
 
+    # Table
     disp = df_1h[['asset', 'source', 'platform', 'current_price', 'start_price', 'pct_change', 'bias', 'true_prob_up', 'confidence', 'signal_label']].copy()
     disp['current_price'] = disp['current_price'].apply(format_p)
     disp['start_price'] = disp['start_price'].apply(format_p)
@@ -306,6 +298,7 @@ with tab2:
     disp.columns = ['Asset', 'Data Source', 'Platform', 'Current (Live)', 'Start Price (UTC)', 'Change %', 'Bias', 'True Prob (UP)', 'Conf', 'Signal']
     st.dataframe(disp, use_container_width=True)
 
+    # DEEP DIVE
     st.markdown("### 📉 Technical Deep Dive & Reasoning")
     detail_col1, detail_col2 = st.columns(2)
 
