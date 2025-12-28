@@ -9,46 +9,93 @@ import time
 if 'selected_tab' not in st.session_state:
     st.session_state.selected_tab = "15m"
 
-# --- 2. DATA FETCHING (UTC ALIGNED) ---
+# --- 2. DATA FETCHING WITH FALLBACK (Binance -> Bybit -> Coinbase) ---
 
 def get_market_data(asset, timeframe):
     """
-    Fetches Live Price (ticker endpoint) and Start Price (klines endpoint).
-    Aligns strictly with Binance UTC time.
+    Tries to fetch price from multiple sources in order.
+    Returns: (current_price, start_price, source_name)
     """
-    symbol_map = {
-        "BTC": "BTCUSDT", "ETH": "ETHUSDT", "SOL": "SOLUSDT",
-        "DOGE": "DOGEUSDT", "PEPE": "PEPEUSDT"
-    }
     
-    try:
-        # 1. Get Current Price (Fastest endpoint)
-        url_price = f"https://api.binance.com/api/v3/ticker/price?symbol={symbol_map.get(asset)}"
-        resp_price = requests.get(url_price)
-        current_price = float(resp_price.json()['price'])
+    # Map assets to API symbols
+    binance_sym = f"{asset}USDT"
+    bybit_sym = f"{asset}USDT"
+    coinbase_sym = f"{asset}-USD"
+    
+    # Map dashboard timeframe to API intervals
+    # 15m = 900s, 1h = 3600s
+    interval_map = {'15m': '15m', '1h': '1h'} # Binance
+    bybit_map = {'15m': '15', '1h': '60'}     # Bybit (numbers)
+    coinbase_map = {'15m': 900, '1h': 3600}    # Coinbase (seconds)
+    
+    api_interval = interval_map.get(timeframe, '15m')
+    api_bybit = bybit_map.get(timeframe, '15')
+    api_coinbase = coinbase_map.get(timeframe, 900)
 
-        # 2. Get Start Price (Klines endpoint - Candle Open)
-        interval_map = {'15m': '15m', '1h': '1h'}
-        api_interval = interval_map.get(timeframe, '15m')
-        
-        url_klines = f"https://api.binance.com/api/v3/klines?symbol={symbol_map.get(asset)}&interval={api_interval}&limit=1"
-        resp_klines = requests.get(url_klines)
-        data = resp_klines.json()
-        
-        start_price = float(data[0][1])
-        
-        return current_price, start_price
-    except Exception as e:
-        st.write(f"Error fetching {asset}: {e}")
-        return 0.0, 0.0
+    sources = ["Binance", "Bybit", "Coinbase"]
+    
+    for source in sources:
+        try:
+            current_price = 0.0
+            start_price = 0.0
+            
+            # === SOURCE 1: BINANCE ===
+            if source == "Binance":
+                # Price
+                url_price = f"https://api.binance.com/api/v3/ticker/price?symbol={binance_sym}"
+                resp_price = requests.get(url_price, timeout=2)
+                if resp_price.status_code != 200: raise Exception("Status Error")
+                current_price = float(resp_price.json()['price'])
+                
+                # Candles (Start Price)
+                url_klines = f"https://api.binance.com/api/v3/klines?symbol={binance_sym}&interval={api_interval}&limit=1"
+                resp_klines = requests.get(url_klines, timeout=2)
+                if resp_klines.status_code != 200: raise Exception("Status Error")
+                start_price = float(resp_klines.json()[0][1])
+
+            # === SOURCE 2: BYBIT ===
+            elif source == "Bybit":
+                # Price (Spot V5)
+                url_price = f"https://api.bybit.com/v5/market/tickers?category=spot&symbol={bybit_sym}"
+                resp_price = requests.get(url_price, timeout=2)
+                if resp_price.status_code != 200: raise Exception("Status Error")
+                current_price = float(resp_price.json()['result']['list'][0]['lastPrice'])
+                
+                # Candles
+                url_klines = f"https://api.bybit.com/v5/market/kline?category=spot&symbol={bybit_sym}&interval={api_bybit}&limit=1"
+                resp_klines = requests.get(url_klines, timeout=2)
+                if resp_klines.status_code != 200: raise Exception("Status Error")
+                # Bybit returns [start_time, open, high, low, close, volume, ...]
+                start_price = float(resp_klines.json()['result']['list'][0]['open'])
+
+            # === SOURCE 3: COINBASE ===
+            elif source == "Coinbase":
+                # Price
+                url_price = f"https://api.coinbase.com/v2/prices/{coinbase_sym}/spot"
+                resp_price = requests.get(url_price, timeout=2)
+                if resp_price.status_code != 200: raise Exception("Status Error")
+                current_price = float(resp_price.json()['data']['amount'])
+                
+                # Candles
+                url_klines = f"https://api.coinbase.com/v2/prices/{coinbase_sym}/candles?granularity={api_coinbase}"
+                resp_klines = requests.get(url_klines, timeout=2)
+                if resp_klines.status_code != 200: raise Exception("Status Error")
+                # Coinbase returns [time, low, high, open, close, volume]
+                start_price = float(resp_klines.json()['data'][0][3])
+
+            # If we got here, success!
+            return current_price, start_price, source
+
+        except Exception as e:
+            # If this source failed, log it and continue to next source
+            # st.sidebar.write(f"{source} failed for {asset}: {str(e)[:15]}") # Debug
+            continue
+
+    # If loop finishes, all sources failed
+    return 0.0, 0.0, "Error"
 
 def get_timer(timeframe):
-    """
-    Calculates time remaining based on UTC Time to match Binance candles.
-    """
-    # USE UTC TIME to match Binance
     now = datetime.datetime.utcnow() 
-    
     minute = now.minute
     second = now.second
     
@@ -56,7 +103,7 @@ def get_timer(timeframe):
         block_size = 15
         total_seconds = 900
         text = "15 Min Market"
-    else: # 1h
+    else:
         block_size = 60
         total_seconds = 3600
         text = "1 Hour Market"
@@ -64,9 +111,7 @@ def get_timer(timeframe):
     minutes_into = minute % block_size
     seconds_passed = (minutes_into * 60) + second
     seconds_left = total_seconds - seconds_passed
-    
-    if seconds_left <= 0: 
-        seconds_left = total_seconds
+    if seconds_left <= 0: seconds_left = total_seconds
         
     mins, secs = divmod(seconds_left, 60)
     return f"{mins:02d}:{secs:02d}", seconds_left, text
@@ -79,11 +124,25 @@ def generate_signals(timeframe):
     plat_label = "Polymarket" if timeframe == "15m" else "Kalshi / Poly"
 
     for asset in assets:
-        current_price, start_price = get_market_data(asset, timeframe)
+        current_price, start_price, source = get_market_data(asset, timeframe)
         
-        if current_price == 0.0: 
-            current_price = 0.0001 
-            start_price = 0.0001
+        if current_price == 0.0 or start_price == 0.0:
+            data.append({
+                "asset": asset,
+                "platform": plat_label,
+                "source": "UNAVAILABLE",
+                "current_price": 0.0,
+                "start_price": 0.0,
+                "pct_change": 0.0,
+                "bias": "WAIT",
+                "true_prob_up": 0.50,
+                "confidence": 0.0,
+                "signal_label": "DATA ERROR",
+                "reasoning": "All APIs unreachable.",
+                "tech_indicators": "OFFLINE"
+            })
+            continue
+            
         pct_change = ((current_price - start_price) / start_price) * 100
 
         rand_val = random.random()
@@ -129,6 +188,7 @@ def generate_signals(timeframe):
         data.append({
             "asset": asset,
             "platform": plat_label,
+            "source": source, # NEW COLUMN
             "current_price": current_price,
             "start_price": start_price,
             "pct_change": pct_change,
@@ -143,7 +203,13 @@ def generate_signals(timeframe):
 
 # --- 4. DASHBOARD UI ---
 
-st.set_page_config(page_title="Crypto Multi-Timeframe Bot", page_icon="⏱️", layout="wide")
+st.set_page_config(page_title="Crypto Multi-Source Bot", page_icon="🌐", layout="wide")
+
+# SIDEBAR STATUS
+with st.sidebar:
+    st.header("📡 Network Status")
+    st.caption("Data Chain: Binance ➔ Bybit ➔ Coinbase")
+    st.caption("If prices lag, check your internet.")
 
 tab1, tab2 = st.tabs(["15 Minute Markets", "1 Hour Markets"])
 
@@ -152,7 +218,7 @@ tab1, tab2 = st.tabs(["15 Minute Markets", "1 Hour Markets"])
 # ==========================================
 with tab1:
     st.title("🤖 15-Minute Prediction Markets (UTC)")
-    st.caption("Polymarket Focus | Data from Binance UTC")
+    st.caption("Polymarket Focus | Multi-Source API")
     
     timer_str, secs_left, t_type = get_timer("15m")
     if secs_left < 60: st.error(f"⚠️ CLOSING SOON ({t_type}): {timer_str}")
@@ -171,24 +237,17 @@ with tab1:
     def format_p(p): return f"${p:,.2f}" if p > 1 else f"${p:.8f}"
     def format_pct(v): return f"{v:+.2f}%"
 
-    disp = df_15m[['asset', 'platform', 'current_price', 'start_price', 'pct_change', 'bias', 'true_prob_up', 'confidence', 'signal_label']].copy()
+    disp = df_15m[['asset', 'source', 'platform', 'current_price', 'start_price', 'pct_change', 'bias', 'true_prob_up', 'confidence', 'signal_label']].copy()
     disp['current_price'] = disp['current_price'].apply(format_p)
     disp['start_price'] = disp['start_price'].apply(format_p)
     disp['pct_change'] = disp['pct_change'].apply(format_pct)
-    disp.columns = ['Asset', 'Platform', 'Current (Live)', 'Start Price (UTC)', 'Change %', 'Bias', 'True Prob (UP)', 'Conf', 'Signal']
+    disp.columns = ['Asset', 'Data Source', 'Platform', 'Current (Live)', 'Start Price (UTC)', 'Change %', 'Bias', 'True Prob (UP)', 'Conf', 'Signal']
     st.dataframe(disp, use_container_width=True)
 
-    # --- DEEP DIVE (RE-ADDED) ---
+    # DEEP DIVE
     st.markdown("### 📉 Technical Deep Dive & Reasoning")
     detail_col1, detail_col2 = st.columns(2)
-    
-    neutral_box_style = """
-        border: 1px solid #ddd; 
-        padding: 15px; 
-        border-radius: 5px; 
-        background-color: #f9f9f9; 
-        margin-bottom: 10px;
-    """
+    neutral_box_style = "border: 1px solid #ddd; padding: 15px; border-radius: 5px; background-color: #f9f9f9; margin-bottom: 10px;"
 
     with detail_col1:
         for i, row in df_15m.iloc[:3].iterrows():
@@ -215,7 +274,7 @@ with tab1:
 # ==========================================
 with tab2:
     st.title("🤖 1-Hour Prediction Markets (UTC)")
-    st.caption("Kalshi & Polymarket Focus | Data from Binance UTC")
+    st.caption("Kalshi & Polymarket Focus | Multi-Source API")
     
     timer_str, secs_left, t_type = get_timer("1h")
     if secs_left < 120: st.warning(f"⚠️ CLOSING SOON ({t_type}): {timer_str}")
@@ -231,14 +290,14 @@ with tab2:
     c3.metric("SOL", f"${df_1h[df_1h['asset']=='SOL']['current_price'].values[0]:,.2f}")
 
     # Table
-    disp = df_1h[['asset', 'platform', 'current_price', 'start_price', 'pct_change', 'bias', 'true_prob_up', 'confidence', 'signal_label']].copy()
+    disp = df_1h[['asset', 'source', 'platform', 'current_price', 'start_price', 'pct_change', 'bias', 'true_prob_up', 'confidence', 'signal_label']].copy()
     disp['current_price'] = disp['current_price'].apply(format_p)
     disp['start_price'] = disp['start_price'].apply(format_p)
     disp['pct_change'] = disp['pct_change'].apply(format_pct)
-    disp.columns = ['Asset', 'Platform', 'Current (Live)', 'Start Price (UTC)', 'Change %', 'Bias', 'True Prob (UP)', 'Conf', 'Signal']
+    disp.columns = ['Asset', 'Data Source', 'Platform', 'Current (Live)', 'Start Price (UTC)', 'Change %', 'Bias', 'True Prob (UP)', 'Conf', 'Signal']
     st.dataframe(disp, use_container_width=True)
 
-    # --- DEEP DIVE (RE-ADDED) ---
+    # DEEP DIVE
     st.markdown("### 📉 Technical Deep Dive & Reasoning")
     detail_col1, detail_col2 = st.columns(2)
 
@@ -263,5 +322,5 @@ with tab2:
             """, unsafe_allow_html=True)
 
 # --- AUTO REFRESH ---
-time.sleep(5)
+time.sleep(10)
 st.rerun()
