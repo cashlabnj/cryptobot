@@ -85,7 +85,7 @@ def get_market_data(asset, timeframe):
             else:
                 raise Exception("Coincap Failed")
                 
-        except:
+        except Exception:
             pass
 
         return 0.0, 0.0, "Error"
